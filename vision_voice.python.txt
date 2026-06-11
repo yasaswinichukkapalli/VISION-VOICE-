@@ -1,0 +1,276 @@
+# ============================================
+# Vision Voice - AI Assistive System
+# Real-time Object Detection + Voice Alerts
+# For Visually Impaired People
+# ============================================
+
+import cv2
+import pyttsx3
+from ultralytics import YOLO
+import time
+
+# ============================================
+# SETUP
+# ============================================
+
+print("Vision Voice loading...")
+
+# Load YOLOv8 model
+model = YOLO("yolov8n.pt")
+
+# Setup voice engine
+engine = pyttsx3.init()
+engine.setProperty("rate", 150)
+engine.setProperty("volume", 1.0)
+
+# Setup camera
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+# ============================================
+# SETTINGS
+# ============================================
+
+# These objects trigger DANGER alert (red box)
+DANGER_OBJECTS = [
+    "person", "car", "truck",
+    "motorcycle", "bicycle", "bus", "train"
+]
+
+# These objects are ignored (too common indoors)
+IGNORE_OBJECTS = [
+    "tv", "laptop", "cell phone",
+    "remote", "keyboard", "mouse", "book"
+]
+
+# How many seconds between same object alert
+COOLDOWN = 3
+
+# Minimum confidence to detect (0 to 1)
+MIN_CONFIDENCE = 0.5
+
+# Track when each object was last spoken
+last_spoken = {}
+
+# ============================================
+# FUNCTIONS
+# ============================================
+
+def speak(text):
+    """Speak text aloud"""
+    try:
+        print(f"VOICE: {text}")
+        engine.say(text)
+        engine.runAndWait()
+    except:
+        pass
+
+
+def draw_detection_box(frame, x1, y1, x2, y2,
+                        label, confidence, is_danger):
+    """Draw colored box around detected object"""
+    
+    # Red for danger, green for safe
+    if is_danger:
+        color = (0, 0, 255)
+    else:
+        color = (0, 255, 150)
+
+    # Draw box
+    cv2.rectangle(
+        frame,
+        (x1, y1), (x2, y2),
+        color, 2
+    )
+
+    # Label text
+    text = f"{label} {confidence:.0%}"
+
+    # Label background
+    (text_w, text_h), _ = cv2.getTextSize(
+        text,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6, 2
+    )
+    cv2.rectangle(
+        frame,
+        (x1, y1 - 28),
+        (x1 + text_w + 10, y1),
+        color, -1
+    )
+
+    # Label text
+    cv2.putText(
+        frame, text,
+        (x1 + 5, y1 - 8),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6, (0, 0, 0), 2
+    )
+
+    return frame
+
+
+def draw_header(frame, detected_count):
+    """Draw top header bar"""
+    h, w = frame.shape[:2]
+
+    # Dark top bar
+    cv2.rectangle(
+        frame,
+        (0, 0), (w, 55),
+        (10, 14, 26), -1
+    )
+
+    # App name
+    cv2.putText(
+        frame, "Vision Voice",
+        (15, 36),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9, (0, 245, 212), 2
+    )
+
+    # Detection count
+    count_text = f"Objects: {detected_count}"
+    cv2.putText(
+        frame, count_text,
+        (w - 160, 36),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65, (255, 255, 255), 1
+    )
+
+    return frame
+
+
+def draw_footer(frame):
+    """Draw bottom footer bar"""
+    h, w = frame.shape[:2]
+
+    # Dark bottom bar
+    cv2.rectangle(
+        frame,
+        (0, h - 38), (w, h),
+        (10, 14, 26), -1
+    )
+
+    # Instructions
+    cv2.putText(
+        frame,
+        "Press Q to quit",
+        (15, h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55, (136, 146, 164), 1
+    )
+
+    # Legend
+    cv2.circle(frame, (w - 180, h - 18), 7,
+               (0, 0, 255), -1)
+    cv2.putText(
+        frame, "Danger",
+        (w - 168, h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5, (255, 255, 255), 1
+    )
+
+    cv2.circle(frame, (w - 90, h - 18), 7,
+               (0, 255, 150), -1)
+    cv2.putText(
+        frame, "Safe",
+        (w - 78, h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5, (255, 255, 255), 1
+    )
+
+    return frame
+
+
+# ============================================
+# STARTUP
+# ============================================
+
+print("=" * 40)
+print("  Vision Voice - Starting")
+print("=" * 40)
+speak("Vision Voice activated. Ready to assist.")
+
+# ============================================
+# MAIN LOOP
+# ============================================
+
+while True:
+
+    # Read camera frame
+    ret, frame = cap.read()
+    if not ret:
+        print("Camera error!")
+        break
+
+    current_time = time.time()
+    detected_labels = []
+
+    # Run AI detection
+    results = model(frame, verbose=False)
+
+    # Process each detection
+    for result in results:
+        for box in result.boxes:
+
+            # Get label and confidence
+            cls_id = int(box.cls[0])
+            label = model.names[cls_id]
+            confidence = float(box.conf[0])
+
+            # Skip if low confidence
+            if confidence < MIN_CONFIDENCE:
+                continue
+
+            # Skip ignored objects
+            if label in IGNORE_OBJECTS:
+                continue
+
+            # Add to detected list
+            detected_labels.append(label)
+
+            # Get box coordinates
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            is_danger = label in DANGER_OBJECTS
+
+            # Draw box on frame
+            frame = draw_detection_box(
+                frame,
+                x1, y1, x2, y2,
+                label, confidence,
+                is_danger
+            )
+
+    # Voice alerts
+    for label in set(detected_labels):
+        last_time = last_spoken.get(label, 0)
+        time_passed = current_time - last_time
+
+        if time_passed > COOLDOWN:
+            if label in DANGER_OBJECTS:
+                speak(f"Danger! {label} ahead")
+            else:
+                speak(f"{label} detected")
+            last_spoken[label] = current_time
+
+    # Draw UI
+    frame = draw_header(frame, len(detected_labels))
+    frame = draw_footer(frame)
+
+    # Show window
+    cv2.imshow("Vision Voice", frame)
+
+    # Press Q to quit
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+# ============================================
+# CLEANUP
+# ============================================
+
+cap.release()
+cv2.destroyAllWindows()
+speak("Vision Voice deactivated. Stay safe.")
+print("Vision Voice stopped.")
